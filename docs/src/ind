@@ -1,0 +1,1 @@
+ElectronicDensity.jl implements in Julia an equivariant machine learning model for predicting the 3D electronic density distribution of molecules and crystals.
