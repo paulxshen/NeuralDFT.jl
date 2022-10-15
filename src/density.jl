@@ -6,41 +6,11 @@ using Random
 using StatsBase
 using DataStructures
 using PeriodicTable
-using DFTK
+using Combinatorics
 # using EquivariantOperators
 include("../../EquivariantOperators.jl/src/operators.jl")
-
+include("utils.jl")
 Random.seed!(1)
-
-psp = Dict([
-    1 => ElementPsp(:H, psp=load_psp("hgh/lda/h-q1")),
-    2 => ElementPsp(:He, psp=load_psp("hgh/lda/He-q2")),
-    3 => ElementPsp(:Li, psp=load_psp("hgh/lda/Li-q3")),
-    6 => ElementPsp(:C, psp=load_psp("hgh/lda/c-q4")),
-    7 => ElementPsp(:N, psp=load_psp("hgh/lda/n-q5")),
-    8 => ElementPsp(:O, psp=load_psp("hgh/lda/o-q6")),
-    9 => ElementPsp(:F, psp=load_psp("hgh/lda/f-q7")),
-    10 => ElementPsp(:Ne, psp=load_psp("hgh/lda/Ne-q8")),
-    14=>ElementPsp(:Si, psp=load_psp("hgh/lda/Si-q4")),
-    16 => ElementPsp(:S, psp=load_psp("hgh/lda/s-q6")),
-    17 => ElementPsp(:Cl, psp=load_psp("hgh/lda/Cl-q7")),
-])
-He=psp[2]
-Ne=psp[10]
-Si=psp[14]
-
-kgrid = [1, 1, 1]
-
-const EN = Dict([
-    1 => 2.2,
-    6 => 2.55,
-    7 => 3.04,
-    8 => 3.44,
-    9 => 3.98,
-    14 => 1.9,
-    16 => 2.58,
-    17 => 3.16,
-])
 
 const p = load("model.jld2", "p")
 
@@ -48,135 +18,167 @@ function rescale(a, s)
     a / sum(a) * s
 end
 
-function mix!(X)
-    n = length(X)
-    for i = 1:n
-        for j = i:n
-            push!(X, X[i] .* X[j])
-        end
+function mix(X,n;replace=false)
+    # n = length(X)
+    # for i = 1:n
+    #     for j = i:n
+    #         push!(X, X[i] .* X[j])
+    #     end
+    # end
+    f=replace ? with_replacement_combinations : combinations
+    map(f(X,n)) do a
+        reduce((x,y)->x.*y,a)
     end
 end
 
-# function predict_density(atoms,positions,lattice,resolution,periodic)
-function features(atoms, positions, lattice, Ecut, periodic)
-    # sz=norm.(eachcol(lattice)).÷resolution
-
-    Z = atoms
-    Zv = broadcast(x ->
-            elements[x].shells[end],Z)
-    Zc = Z - Zv
-
-    atoms = DefaultDict(Vector)
-    core_atoms = DefaultDict(Vector)
-    for (a, b, x) in zip(Z, Zc, eachcol(positions))
-        xr = lattice \ x
-        push!(atoms[psp[a]], xr)
-        if b != 0
-            push!(core_atoms[psp[b]], xr)
-        end
-    end
-    atoms = collect(atoms)
-    core_atoms = collect(core_atoms)
-
-    model = model_LDA(lattice, atoms)
-    basis = PlaneWaveBasis(model, Ecut; kgrid=kgrid)
-    ρv_SAD = guess_density(basis)
-
-    if !isempty(core_atoms)
-        core_model = model_LDA(lattice, core_atoms)
-        core_basis = PlaneWaveBasis(core_model; Ecut, kgrid)
-        ρc_SAD = guess_density(core_basis)
-    else
-        ρc_SAD = zeros(sz)
-    end
-
-    ρc_SAD = ρc_SAD[:, :, :, 1]
-    ρv_SAD = ρv_SAD[:, :, :, 1]
-
-    sz = size(ρv_SAD)
+# function predict_density(Z,pos,lattice,resolution,periodic)
+function features(Z, pos,origin, lattice, sz, periodic)
     cell = lattice ./ sz
-    origin = ones(3)
-    # origin =periodic ? ones(3) : sz./2
-    grid = Grid(cell, sz; origin)
+    grid = Grid(cell, origin,sz; )
     @unpack dv = grid
+
+    Zv = broadcast(x ->
+            elements[x].shells[end], Z)
+    Zc = Z - Zv
+    zpos = DefaultDict(Vector)
+    zposc = DefaultDict(Vector)
+    # X = OrderedDict()
+    X =[]
+    ρzv=zeros(sz)
+
+    for (z, zc, p) in zip(Z, Zc, eachcol(pos))
+        push!(zpos[z], p)
+        push!(zposc[zc], p)
+    end
+    for z in [1,6,7,8,9]
+        if z in Z
+        ρ = zeros(sz)
+        zv=valence(z)
+        zc=core(z)
+        ρzv+=zv*ρ
+        for p in zpos[z]
+            put!(ρ,grid, p, 1)
+        end
+
+        pad=:same
+        rmax = 6.0
+        border = periodic ? :circular : 0
+        alg = :fft
+
+        σ = atom_decay_length(z)
+        gev = zv * Gaussian(cell, σ, 3σ; pad, border, alg)(ρ)
+        e = Op(r -> exp(-r/σ), rmax, cell; pad, border, alg)
+        dev=zv*e(ρ)
+        
+        if zc>0
+            σ = atom_decay_length(zc)
+            gec = zc * Gaussian(cell, σ, 3σ; pad, border, alg)(ρ)
+            dec=zc*Op(r -> exp(-r/σ), rmax, cell; pad, border, alg)(ρ)
+        else
+            gec=zeros(sz)
+            dec=zeros(sz)
+        end
+
+        rmin = 1e-9
+        ϕ = Op(r -> 1 / (4π * r), rmax, cell; rmin, pad, border, alg)
+        
+        ϕ0 = ϕ(ρ)
+        ϕz = z * ϕ0
+        ϕzc = zc * ϕ0
+        
+        ϕgev = ϕ(gev)
+        ϕgec = ϕ(gec)
+        ϕdec = ϕ(dec)
+        ϕdev = ϕ(dev)
+        # ϕ
+
+
+        # X[z,:] = (; gev, gec, ϕz, ϕzc, ϕgev, ϕgec)
+        push!(X,[ gev, gec, dev,dec,ϕz, ϕzc, ϕgev, ϕgec,ϕdec,ϕdev])
+    else
+        push!(X,fill(zeros(sz),10))
+        # gev= gec= ϕz= ϕzc= ϕgev= ϕgec=zeros(sz)
+    end
+    end
+    X=reduce(hcat,X)
 
     N = sum(Z)
     Nv = sum(Zv)
     Nc = sum(Zc)
     @assert N == Nv + Nc
-    @show sum(ρv_SAD) * dv, Nv
-    @show sum(ρc_SAD) * dv, Nc
+    # @show sum(gev) * dv, Nv
+    # @show sum(gec) * dv, Nc
 
-    ρpv = zeros(sz)
-    put!(ρpv, grid, positions, Zv)
-    ρpc = zeros(sz)
-    put!(ρpc, grid, positions, Zc)
-    ρp = ρpc + ρpv
 
-    # ρmh = zeros(sz)
-    # put!(ρmh, grid, positions, [ustrip(elements[z].molar_heat) for z in Z])
-    ρen = zeros(sz)
-    put!(ρen, grid, positions, [EN[z] for z in Z])
-
-    # rmax = 3.0
-    pad = :same
-    border = periodic ? :circular : 0
-    alg = :fft
-    s = [0.5, 1]
-    # s = [0.5, 1, 1.5]
-    # s = [1, 2]
-    ops = vcat(
-        [Op(r -> exp(-r / a), 6a, cell; pad, border, alg) for a = s],
-        [Op(r -> exp(-(r / a)^2), 3a, cell; pad, border, alg) for a = s],
-        [Op(r -> 1 / r, 6.0, cell; pad, border, alg, rmin=1e-6)],
-    )
-
-    X0 = [vec([f(u) for f = ops, u = (ρp, ρpv, ρen, ρc_SAD, ρv_SAD)])..., ρc_SAD, ρv_SAD]
-    # X0 = [vec([f(u) for f = ops, u = (ρp,  ρpv, ρen)])..., ρc_SAD,ρv_SAD]
-    # X0_ = copy(X0)
-    mix!(X0)
-
+    # X0 = reduce(vcat, collect.(values(X)))
+    # X0 = [sum(getproperty.(values(X),k)) for k in sort(collect(keys(first(values(X)))))]
+    # mix!(X0)
+    
     # mix!(X)
-    # X = [X0..., [op(ρv) for op in ops[[]]]...]
-    X0
+    # X = [X0..., [op(ρev) for op in ops[[]]]...]
+    # X0
+    
+    F=[sqrt,x->x^2]
+    X=sum(X,dims=2)
+    X=reduce(vcat,[mix(X,n) for n=1:3])
+
+    X_=map(F) do f
+        map(X) do x
+            f.(abs.(x))
+            # f.(x)
+        end
+    end
+    X=vcat(X,reduce(vcat,X_))
+    (;X,ρzv,cell)
 end
 
-function predict_density(atoms, positions, lattice; Ecut=40, periodic=false, model=p)
-    X = features(atoms, positions, lattice, Ecut, periodic)
+function predict_density(Z, pos, lattice,resolution::Real;kw...)
+    sz = norm.(eachcol(lattice)) .÷ resolution
+     predict_density(Z, pos, lattice,sz;kw...)
+end
 
-    Z=atoms
-    Zv=map(Z) do z
+function predict_density(Z, pos, lattice,sz; periodic=false, model=p,origin=ones(3))
+# function predict_density(Z, pos, lattice,sz; periodic=false, model=p,origin=(sz.+1)./2)
+  @unpack ρzv,cell,  X = features(Z, pos,origin, lattice, sz, periodic)
+
+    Zv = map(Z) do z
         elements[z].shells[end]
     end
 
-    ρv = sum(p .* X)
-    ρv = max.(0, ρv)
+    ρev = sum(p .* X)
+    ρev = max.(0, ρev)
 
-    dv=det(lattice)/length(ρv)
-    rescale(ρv, sum(Zv)/dv)
+    dv = det(lattice) / length(ρev)
+    ρev= rescale(ρev, sum(Zv) / dv)
+
+    if verbose
+        return (;Z,pos,lattice,cell,ρev,ρzv, Zv,periodic,origin)
+    end
+    return ρev
 end
 
-function train(data;nsamples=5000)
-
-    # function train(atoms,positions,lattice,ρv;Ecut=40,periodic=false,nsamples=5000)
+function train(data; nsamples=5000)
     data_train = []
     for case in data
-        @unpack Z, positions, lattice, ρv, Ecut,  = case
-        periodic=false
-       
-        X = features(Z, positions, lattice, Ecut, periodic)
-        y = ρv
+        @unpack Z, pos, lattice, ρev = case
+        sz=size(ρev)
+
+        origin=ones(3)
+        periodic = false
+
+        X = features(Z, pos,origin, lattice,sz, periodic)
+        y = ρev
 
         N = length(Z)
         n = N * nsamples
         Random.seed!(1)
-        ix = sample(1:length(ρv), n)
+        ix = sample(1:length(ρev), n)
 
         A = [X[i][j] for i in eachindex(X), j in ix]'
         b = y[ix]
 
         t = (; A, b)
-        # t=(;dx,A0, X0, b,ρv_SAD,ρc_SAD,ρv)
+        # t=(;dx,A0, X0, b,ρev_SAD,ρc_SAD,ρev)
         push!(data_train, t)
     end
     A = vcat(getproperty.(data_train, :A)...)
