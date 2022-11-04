@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Basics: predicting electron density and force fields · NeuralDFT.jl</title><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.045/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.13.24/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><a class="docs-logo" href="../"><img src="../assets/logo.png" alt="NeuralDFT.jl logo"/></a><div class="docs-package-name"><span class="docs-autofit"><a href="../">NeuralDFT.jl</a></span></div><form class="docs-search" action="../search/"><input class="docs-search-query" id="documenter-search-query" name="q" type="text" placeholder="Search docs"/></form><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><a class="tocitem" href="../guide/">Guide</a></li><li><span class="tocitem">tutorials</span><ul><li><a class="tocitem" href="../install/">Installation</a></li><li class="is-active"><a class="tocitem" href>Basics: predicting electron density and force fields</a><ul class="internal"><li><a class="tocitem" href="#Output"><span>Output</span></a></li></ul></li><li><a class="tocitem" href="../dft/">DFT acceleration</a></li></ul></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><nav class="breadcrumb"><ul class="is-hidden-mobile"><li><a class="is-disabled">tutorials</a></li><li class="is-active"><a href>Basics: predicting electron density and force fields</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Basics: predicting electron density and force fields</a></li></ul></nav><div class="docs-right"><a class="docs-edit-link" href="https://github.com//blob/master/docs/src/basics.md" title="Edit on GitHub"><span class="docs-icon fab"></span><span class="docs-label is-hidden-touch">Edit on GitHub</span></a><a class="docs-settings-button fas fa-cog" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-sidebar-button fa fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a></div></header><article class="content" id="documenter-page"><h1 id="Basics:-predicting-electron-density-and-force-fields"><a class="docs-heading-anchor" href="#Basics:-predicting-electron-density-and-force-fields">Basics: predicting electron density and force fields</a><a id="Basics:-predicting-electron-density-and-force-fields-1"></a><a class="docs-heading-anchor-permalink" href="#Basics:-predicting-electron-density-and-force-fields" title="Permalink"></a></h1><pre><code class="language-julia hljs">&quot;&quot;&quot;
+we predict density and forces on equilibrium and distorted geometries of CH4
+&quot;&quot;&quot;
+
+using FileIO
+using Random
+using Statistics
+using UnPack
+Random.seed!(1)
+using GLMakie: volume
+using LinearAlgebra
+using EquivariantOperators
+include(&quot;../src/pretrained.jl&quot;)
+
+# whether to re-instantiate models or load them from cache file
+reset = true
+# reset=false
+
+# CH4 atomic numbers
+Z = [6, 1, 1, 1, 1]
+
+# positions in Bohr (1 Angstrom = 1.88973 Bohr)
+pos0 = 1.88973 * [
+    -0.0126981359 1.0858041578 0.0080009958
+    0.002150416 -0.0060313176 0.0019761204
+    1.0117308433 1.4637511618 0.0002765748
+    -0.540815069 1.4475266138 -0.8766437152
+    -0.5238136345 1.4379326443 0.9063972942]&#39;
+center!(pos0)
+
+if !reset
+    d = &quot;.&quot;
+    global predictor = load(&quot;$d\\demo2_predictor.jld2&quot;, &quot;predictor&quot;)
+else
+    resolution = 0.15
+    cell = resolution * I(3)
+    d = &quot;.&quot;
+    # model = load(&quot;$d\\demo2.jld2&quot;, &quot;model&quot;)
+    model = DEMO2
+    global predictor = DensityPredictor(cell, model,)
+    d = &quot;.&quot;
+    save(&quot;$d\\demo2_predictor.jld2&quot;, &quot;predictor&quot;, predictor)
+end
+
+# 8 x 8 x 8 Bohr box domain
+domain = 8 * I(3)
+origin = :center
+periodic = false
+mode = :verbose
+
+# density prediction result
+pos = pos0
+res = predictor(Z, pos, domain; periodic, origin, mode)
+@unpack ρ, grid = res
+s = volume(ρ)
+display(s)
+# save(&quot;ch4.png&quot;,s)
+
+# forces in Hartrees / Bohr
+d = &quot;.&quot;
+if !reset
+    calc = load(&quot;$d\\calc.jld2&quot;, &quot;calc&quot;,)
+else
+    cell = 0.1I(3)
+    calc = ForceField(cell)
+    save(&quot;$d\\calc.jld2&quot;, &quot;calc&quot;, calc)
+end
+
+forces = calc(Z, pos, ρ; origin, cell=predictor.cell)
+@info &quot;forces near equilibrium&quot;
+@info &quot;CH length: $(norm(pos[:, 1] - pos[:, 2])) Bohr&quot;
+display(forces)
+
+# compress geometry and recalculate forces
+pos = 0.9pos0
+@info &quot;forces for compressed geometry&quot;
+@info &quot;CH length: $(norm(pos[:, 1] - pos[:, 2])) Bohr&quot;
+ρ = predictor(Z, pos, domain; periodic, origin)
+forces = calc(Z, pos, ρ; origin, cell=predictor.cell)
+display(forces)
+
+s = volume(ρ)
+display(s)
+# save(&quot;ch4c.png&quot;,s)
+
+# geometry relaxation loop - needs to fix stability issues
+# for i = 1:12
+#     ρ = predictor(Z, pos, domain; periodic, origin)
+#     forces .= calc(Z, pos, ρ; origin, cell=predictor.cell)
+#     pos .+= .2forces
+#     display(forces)
+#     @show norm(pos[:, 1] - pos[:, 2])
+# end</code></pre><h2 id="Output"><a class="docs-heading-anchor" href="#Output">Output</a><a id="Output-1"></a><a class="docs-heading-anchor-permalink" href="#Output" title="Permalink"></a></h2><p><img src="../ch4.png" alt="equilibrium CH4"/></p><p>&lt;!– <img src="ch4.png &quot;equilibrium CH4&quot;" alt="equilibrium CH4"/> –&gt;</p><pre><code class="nohighlight hljs">[ Info: forces near equilibrium
+[ Info: CH length: 2.0634964549624915 Bohr
+3×5 Matrix{Float64}:
+  0.000827607  -1.74149e-5   0.0176606   -0.00994492  -0.00902619
+ -0.00785024   -0.0171859    0.00718738   0.00672194   0.0062683
+  0.0017415    -4.89954e-5  -4.83321e-5  -0.0150512    0.0147357</code></pre><p><img src="../ch4c.png" alt="compressed CH4"/></p><p>&lt;!– <img src="ch4c.png &quot;compressed CH4&quot;" alt="compressed CH4"/> –&gt;</p><pre><code class="nohighlight hljs">[ Info: forces for compressed geometry
+[ Info: CH length: 1.8571468094662422 Bohr
+3×5 Matrix{Float64}:
+  0.00604092   0.00111333    0.0957033    -0.0494133  -0.0476794
+ -0.00396767  -0.100294      0.0354205     0.0340532   0.0338676
+  0.00261663  -0.000561355  -0.000580622  -0.0821397   0.0839953</code></pre></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../install/">« Installation</a><a class="docs-footer-nextpage" href="../dft/">DFT acceleration »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 0.27.23 on <span class="colophon-date" title="Friday 4 November 2022 15:28">Friday 4 November 2022</span>. Using Julia version 1.8.0.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>

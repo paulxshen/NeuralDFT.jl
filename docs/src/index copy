@@ -2,7 +2,7 @@
 
 ## Synopsis
 
-ElectronicDensity.jl implements in Julia an equivariant machine learning model for predicting electronic density of 
+NeuralDFT.jl implements in Julia an equivariant machine learning model for predicting electronic density of 
 
 ## Tutorials
 

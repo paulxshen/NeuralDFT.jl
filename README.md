@@ -1,1 +1,1 @@
-# ElectronDensity.jl
+# NeuralDFT.jl
